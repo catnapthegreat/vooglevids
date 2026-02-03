@@ -1,0 +1,361 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  onSnapshot, 
+  addDoc, 
+  query, 
+  serverTimestamp,
+  deleteDoc,
+  doc 
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  Upload, 
+  Play, 
+  Film, 
+  Music, 
+  Trash2, 
+  Users, 
+  Video, 
+  Volume2,
+  X,
+  Plus,
+  Youtube,
+  FileVideo,
+  Loader2
+} from 'lucide-react';
+
+// --- Firebase Configuration & Initialization ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'voogle-vids-demo';
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [mediaItems, setMediaItems] = useState([]);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [isUploading, setIsUploading] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Form State
+  const [title, setTitle] = useState('');
+  const [url, setUrl] = useState('');
+  const [type, setType] = useState('video');
+  const [uploadMode, setUploadMode] = useState('url'); // 'url' or 'file'
+  const fileInputRef = useRef(null);
+
+  // Current Playing State
+  const [activeMedia, setActiveMedia] = useState(null);
+
+  const getEmbedUrl = (inputUrl) => {
+    if (!inputUrl) return null;
+    const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
+    const match = inputUrl.match(ytRegex);
+    if (match && match[1]) {
+      return `https://www.youtube.com/embed/${match[1]}?autoplay=1`;
+    }
+    return inputUrl;
+  };
+
+  const isYouTube = (inputUrl) => {
+    return /(?:youtube\.com|youtu\.be)/i.test(inputUrl);
+  };
+
+  // Reset function for logo click
+  const goHome = (e) => {
+    e.preventDefault();
+    setActiveMedia(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth error:", err);
+        setError("Failed to sign in. Please refresh.");
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const mediaRef = collection(db, 'artifacts', appId, 'public', 'data', 'media');
+    const q = query(mediaRef);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      const sortedItems = items.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+      setMediaItems(sortedItems);
+    }, (err) => {
+      console.error("Firestore error:", err);
+      setError("Failed to sync media library.");
+    });
+    return () => unsubscribe();
+  }, [user]);
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (file.size > 10 * 1024 * 1024) { 
+      setError("File is too large. Please keep uploads under 10MB.");
+      return;
+    }
+
+    const reader = new FileReader();
+    setIsUploading(true);
+    reader.onload = (event) => {
+      setUrl(event.target.result);
+      if (file.type.startsWith('video/')) setType('video');
+      if (file.type.startsWith('audio/')) setType('audio');
+      if (!title) setTitle(file.name.split('.')[0]);
+      setIsUploading(false);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleUpload = async (e) => {
+    e.preventDefault();
+    if (!title || !url || !user) return;
+
+    let finalUrl = url;
+    let finalType = type;
+    const isYT = isYouTube(url);
+
+    if (isYT) {
+      finalUrl = getEmbedUrl(url);
+      finalType = 'video';
+    }
+
+    try {
+      setIsUploading(true);
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'media'), {
+        title,
+        url: finalUrl,
+        type: finalType,
+        isExternal: isYT,
+        isFile: uploadMode === 'file',
+        userId: user.uid,
+        userName: `User_${user.uid.substring(0, 4)}`,
+        createdAt: serverTimestamp()
+      });
+      setTitle('');
+      setUrl('');
+      setUploadMode('url');
+      setIsModalOpen(false);
+    } catch (err) {
+      setError("Upload failed.");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const deleteMedia = async (id) => {
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'media', id));
+      if (activeMedia?.id === id) setActiveMedia(null);
+    } catch (err) {
+      setError("Could not delete item.");
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-slate-900 text-white">
+        <div className="animate-spin mr-3"><Loader2 size={24} /></div>
+        Initializing VoogleVids...
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans">
+      <nav className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+          <button 
+            onClick={goHome}
+            className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+          >
+            <div className="bg-red-600 p-1.5 rounded-lg">
+              <Video className="text-white" size={20} />
+            </div>
+            <h1 className="text-xl font-bold tracking-tight">Voogle<span className="text-red-500">Vids</span></h1>
+          </button>
+          
+          <button 
+            onClick={() => setIsModalOpen(true)}
+            className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-full flex items-center gap-2 transition-all shadow-lg shadow-red-600/20 active:scale-95"
+          >
+            <Plus size={18} />
+            <span className="hidden sm:inline">Upload Media</span>
+          </button>
+        </div>
+      </nav>
+
+      <main className="max-w-7xl mx-auto px-4 py-8">
+        {error && (
+          <div className="mb-6 p-4 bg-red-900/30 border border-red-500 text-red-200 rounded-xl flex justify-between items-center">
+            <span className="text-sm">{error}</span>
+            <button onClick={() => setError(null)}><X size={18} /></button>
+          </div>
+        )}
+
+        {activeMedia && (
+          <div className="mb-12 animate-in fade-in slide-in-from-top-4 duration-500">
+            <div className="bg-black rounded-2xl overflow-hidden shadow-2xl border border-slate-800 relative">
+              {activeMedia.isExternal ? (
+                <div className="aspect-video w-full">
+                  <iframe src={activeMedia.url} className="w-full h-full" allowFullScreen allow="autoplay" />
+                </div>
+              ) : activeMedia.type === 'video' ? (
+                <video src={activeMedia.url} controls autoPlay className="w-full max-h-[75vh] bg-black" />
+              ) : (
+                <div className="p-16 flex flex-col items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900 min-h-[300px]">
+                  <Volume2 size={48} className="text-red-500 animate-pulse mb-6" />
+                  <audio src={activeMedia.url} controls autoPlay className="w-full max-w-md" />
+                </div>
+              )}
+            </div>
+            <div className="mt-4 flex justify-between items-start">
+              <div>
+                <h2 className="text-2xl font-bold flex items-center gap-2">
+                  {activeMedia.title}
+                  {activeMedia.isExternal && <Youtube className="text-red-500" size={20} />}
+                  {activeMedia.isFile && <FileVideo className="text-blue-400" size={18} />}
+                </h2>
+                <p className="text-slate-400 text-sm">Shared by {activeMedia.userName}</p>
+              </div>
+              <button onClick={() => setActiveMedia(null)} className="p-2 bg-slate-800 hover:bg-slate-700 rounded-full"><X size={24} /></button>
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          {mediaItems.length === 0 ? (
+            <div className="col-span-full py-20 text-center border-2 border-dashed border-slate-800 rounded-3xl">
+              <Film size={48} className="mx-auto mb-4 text-slate-700" />
+              <h3 className="text-xl font-medium text-slate-500">The Library is Empty</h3>
+              <p className="text-slate-600 mt-2">Upload an MP4 or paste a YouTube link to start the party.</p>
+            </div>
+          ) : (
+            mediaItems.map((item) => (
+              <div 
+                key={item.id} 
+                className={`group relative bg-slate-900 rounded-xl overflow-hidden border transition-all hover:border-red-500/50 ${activeMedia?.id === item.id ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-800'}`}
+              >
+                <div className="aspect-video bg-slate-800 flex items-center justify-center cursor-pointer relative" onClick={() => setActiveMedia(item)}>
+                  {item.isExternal ? <Youtube className="text-red-600" size={40} /> : item.type === 'video' ? <Film className="text-slate-400" size={40} /> : <Music className="text-slate-400" size={40} />}
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 flex items-center justify-center transition-all">
+                    <Play className="text-white opacity-0 group-hover:opacity-100 scale-75 group-hover:scale-100 transition-all" size={40} fill="currentColor" />
+                  </div>
+                </div>
+                <div className="p-4">
+                  <div className="flex justify-between items-start gap-2">
+                    <h3 className="font-semibold truncate text-sm flex-1">{item.title}</h3>
+                    {user?.uid === item.userId && (
+                      <button onClick={(e) => { e.stopPropagation(); deleteMedia(item.id); }} className="text-slate-600 hover:text-red-500"><Trash2 size={14} /></button>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between mt-3">
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 uppercase font-bold">
+                      {item.isExternal ? 'YouTube' : item.isFile ? 'File' : item.type}
+                    </span>
+                    <span className="text-[10px] text-slate-500">{item.userName}</span>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </main>
+
+      {isModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="bg-slate-900 w-full max-w-md rounded-2xl border border-slate-700 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="p-5 border-b border-slate-800 flex justify-between items-center">
+              <h2 className="text-lg font-bold">Add to Library</h2>
+              <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-white"><X size={20} /></button>
+            </div>
+            
+            <div className="p-5 flex gap-2">
+              <button 
+                onClick={() => setUploadMode('url')}
+                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${uploadMode === 'url' ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-400'}`}
+              >LINK / YOUTUBE</button>
+              <button 
+                onClick={() => setUploadMode('file')}
+                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${uploadMode === 'file' ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-400'}`}
+              >UPLOAD FILE</button>
+            </div>
+
+            <form onSubmit={handleUpload} className="px-5 pb-6 space-y-4">
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase">Title</label>
+                <input 
+                  required value={title} onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Cool Video Title"
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 mt-1 text-sm focus:ring-2 focus:ring-red-500 outline-none"
+                />
+              </div>
+
+              {uploadMode === 'url' ? (
+                <div>
+                  <label className="text-xs font-bold text-slate-500 uppercase">YouTube or MP4 URL</label>
+                  <input 
+                    required type="url" value={url} onChange={(e) => setUrl(e.target.value)}
+                    placeholder="https://youtube.com/..."
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 mt-1 text-sm focus:ring-2 focus:ring-red-500 outline-none"
+                  />
+                </div>
+              ) : (
+                <div 
+                  onClick={() => fileInputRef.current.click()}
+                  className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${url ? 'border-green-500 bg-green-500/5' : 'border-slate-700 hover:border-red-500 bg-slate-950'}`}
+                >
+                  <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept="video/mp4,video/x-m4v,video/*,audio/*" className="hidden" />
+                  {isUploading ? <Loader2 className="animate-spin mx-auto text-red-500" /> : <Upload className="mx-auto text-slate-500 mb-2" />}
+                  <p className="text-xs text-slate-400">{url ? "File Ready!" : "Click to select MP4/MP3"}</p>
+                  <p className="text-[10px] text-slate-600 mt-1">Max 10MB</p>
+                </div>
+              )}
+
+              <button 
+                disabled={isUploading || !url}
+                type="submit"
+                className="w-full py-3 bg-red-600 hover:bg-red-700 disabled:bg-slate-800 disabled:text-slate-600 text-white rounded-lg font-bold transition-all shadow-lg flex items-center justify-center gap-2"
+              >
+                {isUploading && <Loader2 size={18} className="animate-spin" />}
+                {isUploading ? 'Processing...' : 'Add to VoogleVids'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
